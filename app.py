@@ -3,7 +3,184 @@ Multi-user Ollama streaming chat interface with Gradio
 - Dynamic add/remove users
 - Per-user model selection & temperature
 - Streaming responses
+"""# ────────────────────────────────────────────────
+# Create one user session block — only creates components
+# ────────────────────────────────────────────────
+def create_user_ui(parent_container: gr.Column):
+    global user_counter
+    user_counter += 1
+
+    with parent_container:
+        with gr.Column(elem_classes="user-session") as session_block:
+            with gr.Row(equal_height=True):
+                name_box = gr.Textbox(
+                    value=f"{DEFAULT_USER_PREFIX} {user_counter}",
+                    label="Name",
+                    max_lines=1,
+                    scale=3,
+                )
+                model_dropdown = gr.Dropdown(
+                    choices=[(get_model_label(m), m) for m in AVAILABLE_MODELS],
+                    value=DEFAULT_MODEL,
+                    label="Model",
+                    interactive=True,
+                    scale=4,
+                )
+                temp_slider = gr.Slider(
+                    minimum=TEMP_MIN,
+                    maximum=TEMP_MAX,
+                    step=TEMP_STEP,
+                    value=DEFAULT_TEMPERATURE,
+                    label="Temperature",
+                    scale=3,
+                )
+                remove_button = gr.Button(
+                    "× Remove",
+                    variant="stop",
+                    size="sm",
+                    min_width=80,
+                    scale=1,
+                )
+
+            prompt_input = gr.Textbox(
+                label="Prompt",
+                lines=MAX_PROMPT_LINES,
+                placeholder="Type your message… (Shift+Enter to send)",
+                show_label=True,
+            )
+
+            response_output = gr.Textbox(
+                label="Response",
+                lines=MAX_OUTPUT_LINES,
+                interactive=False,
+                show_copy_button=True,
+                autoscroll=True,
+            )
+
+    return {
+        "session_block": session_block,
+        "remove_button": remove_button,
+        "prompt_input": prompt_input,
+        "model_dropdown": model_dropdown,
+        "temp_slider": temp_slider,
+        "response_output": response_output,
+    }
+
+
+# ────────────────────────────────────────────────
+# Gradio Interface
+# ────────────────────────────────────────────────
+CSS = """
+.user-session {
+    margin: 1.4rem 0;
+    padding: 1.3rem;
+    border: 1px solid #555;
+    border-radius: 10px;
+    background: #111;
+}
+.add-button {
+    margin: 1rem 0 1.5rem;
+}
 """
+
+with gr.Blocks(title="Multi-User Ollama Chat", css=CSS) as demo:
+
+    gr.Markdown(
+        "# Multi-User Ollama Streaming Chat\n\n"
+        f"**Available models:** {', '.join(get_model_label(m) for m in AVAILABLE_MODELS)}"
+    )
+
+    add_new = gr.Button(
+        "➕ Add New User",
+        variant="primary",
+        elem_classes="add-button",
+        size="lg",
+    )
+
+    users_container = gr.Column()
+
+    # Initialize with configured number of users
+    initial_components = []
+    with users_container:
+        for _ in range(INITIAL_USERS_COUNT):
+            comps = create_user_ui(users_container)
+            initial_components.append(comps)
+
+    # ── Define remove & generate logic ──
+    def remove_session(session_block):
+        session_block.clear()   # or better: gr.update(visible=False)
+
+    def generate_response(prompt, model, temperature, output_component):
+        if not prompt or not prompt.strip():
+            yield "Please type a message."
+            return
+
+        yield "▌ Thinking..."
+
+        full_response = ""
+        for chunk in stream_from_ollama(prompt, model, temperature):
+            full_response += chunk
+            yield full_response + "▌"
+            time.sleep(STREAM_DELAY)
+
+        yield full_response
+
+    # ── Attach events for initial users ──
+    for comps in initial_components:
+        comps["remove_button"].click(
+            remove_session,
+            inputs=comps["session_block"],
+            outputs=None,
+            queue=False,
+        )
+        comps["prompt_input"].submit(
+            generate_response,
+            inputs=[
+                comps["prompt_input"],
+                comps["model_dropdown"],
+                comps["temp_slider"],
+                comps["response_output"],   # pass for reference (not really used as input)
+            ],
+            outputs=comps["response_output"],
+            queue=True,
+        )
+
+    # ── New users ──
+    def add_user_and_bind_events():
+        comps = create_user_ui(users_container)
+        # Immediately bind events to the newly created components
+        comps["remove_button"].click(
+            remove_session,
+            inputs=comps["session_block"],
+            outputs=None,
+            queue=False,
+        )
+        comps["prompt_input"].submit(
+            generate_response,
+            inputs=[
+                comps["prompt_input"],
+                comps["model_dropdown"],
+                comps["temp_slider"],
+                comps["response_output"],
+            ],
+            outputs=comps["response_output"],
+            queue=True,
+        )
+        return None  # no output needed
+
+    add_new.click(
+        add_user_and_bind_events,
+        inputs=None,
+        outputs=None,
+        queue=False,
+    )
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--share", action="store_true")
+    args = parser.parse_args()
+    demo.queue(max_size=20).launch(share=args.share)
 
 import gradio as gr
 import requests
@@ -100,92 +277,67 @@ def stream_from_ollama(
 
 
 # ────────────────────────────────────────────────
-# Create one user session block
+# Create one user session block — only creates components
 # ────────────────────────────────────────────────
-def create_user_ui():
+def create_user_ui(parent_container: gr.Column):
     global user_counter
     user_counter += 1
 
-    with gr.Column(elem_classes="user-session") as session_block:
-        with gr.Row(equal_height=True):
-            name_box = gr.Textbox(
-                value=f"{DEFAULT_USER_PREFIX} {user_counter}",
-                label="Name",
-                max_lines=1,
-                scale=3,
+    with parent_container:
+        with gr.Column(elem_classes="user-session") as session_block:
+            with gr.Row(equal_height=True):
+                name_box = gr.Textbox(
+                    value=f"{DEFAULT_USER_PREFIX} {user_counter}",
+                    label="Name",
+                    max_lines=1,
+                    scale=3,
+                )
+                model_dropdown = gr.Dropdown(
+                    choices=[(get_model_label(m), m) for m in AVAILABLE_MODELS],
+                    value=DEFAULT_MODEL,
+                    label="Model",
+                    interactive=True,
+                    scale=4,
+                )
+                temp_slider = gr.Slider(
+                    minimum=TEMP_MIN,
+                    maximum=TEMP_MAX,
+                    step=TEMP_STEP,
+                    value=DEFAULT_TEMPERATURE,
+                    label="Temperature",
+                    scale=3,
+                )
+                remove_button = gr.Button(
+                    "× Remove",
+                    variant="stop",
+                    size="sm",
+                    min_width=80,
+                    scale=1,
+                )
+
+            prompt_input = gr.Textbox(
+                label="Prompt",
+                lines=MAX_PROMPT_LINES,
+                placeholder="Type your message… (Shift+Enter to send)",
+                show_label=True,
             )
-            model_dropdown = gr.Dropdown(
-                choices=[(get_model_label(m), m) for m in AVAILABLE_MODELS],
-                value=DEFAULT_MODEL,
-                label="Model",
-                interactive=True,
-                scale=4,
-            )
-            temp_slider = gr.Slider(
-                minimum=TEMP_MIN,
-                maximum=TEMP_MAX,
-                step=TEMP_STEP,
-                value=DEFAULT_TEMPERATURE,
-                label="Temperature",
-                scale=3,
-            )
-            remove_button = gr.Button(
-                "× Remove",
-                variant="stop",
-                size="sm",
-                min_width=80,
-                scale=1,
+
+            response_output = gr.Textbox(
+                label="Response",
+                lines=MAX_OUTPUT_LINES,
+                interactive=False,
+                show_copy_button=True,
+                autoscroll=True,
             )
 
-        prompt_input = gr.Textbox(
-            label="Prompt",
-            lines=MAX_PROMPT_LINES,
-            placeholder="Type your message… (Shift+Enter to send)",
-            show_label=True,
-        )
-
-        response_output = gr.Textbox(
-            label="Response",
-            lines=MAX_OUTPUT_LINES,
-            interactive=False,
-            show_copy_button=True,
-            autoscroll=True,
-        )
-
-    # ─── Events ───
-    def remove_session():
-        session_block.clear()
-
-    remove_button.click(
-        fn=remove_session,
-        inputs=None,
-        outputs=None,
-        queue=False,
-    )
-
-    def generate_response(prompt, model, temperature):
-        if not prompt or not prompt.strip():
-            yield "Please type a message."
-            return
-
-        yield "▌ Thinking..."
-
-        full_response = ""
-        for chunk in stream_from_ollama(prompt, model, temperature):
-            full_response += chunk
-            yield full_response + "▌"
-            time.sleep(STREAM_DELAY)
-
-        yield full_response
-
-    prompt_input.submit(
-        fn=generate_response,
-        inputs=[prompt_input, model_dropdown, temp_slider],
-        outputs=response_output,
-        queue=True,
-    )
-
-    return session_block
+    return {
+        "session_block": session_block,
+        "remove_button": remove_button,
+        "prompt_input": prompt_input,
+        "model_dropdown": model_dropdown,
+        "temp_slider": temp_slider,
+        "response_output": response_output,
+    }
 
 
 # ────────────────────────────────────────────────
@@ -204,7 +356,7 @@ CSS = """
 }
 """
 
-with gr.Blocks(title="Multi-User Ollama Chat") as demo:   # ← theme removed here
+with gr.Blocks(title="Multi-User Ollama Chat", css=CSS) as demo:
 
     gr.Markdown(
         "# Multi-User Ollama Streaming Chat\n\n"
@@ -221,14 +373,78 @@ with gr.Blocks(title="Multi-User Ollama Chat") as demo:   # ← theme removed he
     users_container = gr.Column()
 
     # Initialize with configured number of users
+    initial_components = []
     with users_container:
         for _ in range(INITIAL_USERS_COUNT):
-            create_user_ui()
+            comps = create_user_ui(users_container)
+            initial_components.append(comps)
+
+    # ── Define remove & generate logic ──
+    def remove_session(session_block):
+        session_block.clear()   # or better: gr.update(visible=False)
+
+    def generate_response(prompt, model, temperature, output_component):
+        if not prompt or not prompt.strip():
+            yield "Please type a message."
+            return
+
+        yield "▌ Thinking..."
+
+        full_response = ""
+        for chunk in stream_from_ollama(prompt, model, temperature):
+            full_response += chunk
+            yield full_response + "▌"
+            time.sleep(STREAM_DELAY)
+
+        yield full_response
+
+    # ── Attach events for initial users ──
+    for comps in initial_components:
+        comps["remove_button"].click(
+            remove_session,
+            inputs=comps["session_block"],
+            outputs=None,
+            queue=False,
+        )
+        comps["prompt_input"].submit(
+            generate_response,
+            inputs=[
+                comps["prompt_input"],
+                comps["model_dropdown"],
+                comps["temp_slider"],
+                comps["response_output"],   # pass for reference (not really used as input)
+            ],
+            outputs=comps["response_output"],
+            queue=True,
+        )
+
+    # ── New users ──
+    def add_user_and_bind_events():
+        comps = create_user_ui(users_container)
+        # Immediately bind events to the newly created components
+        comps["remove_button"].click(
+            remove_session,
+            inputs=comps["session_block"],
+            outputs=None,
+            queue=False,
+        )
+        comps["prompt_input"].submit(
+            generate_response,
+            inputs=[
+                comps["prompt_input"],
+                comps["model_dropdown"],
+                comps["temp_slider"],
+                comps["response_output"],
+            ],
+            outputs=comps["response_output"],
+            queue=True,
+        )
+        return None  # no output needed
 
     add_new.click(
-        fn=create_user_ui,
+        add_user_and_bind_events,
         inputs=None,
-        outputs=users_container,
+        outputs=None,
         queue=False,
     )
 
@@ -241,9 +457,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     demo.queue(max_size=20).launch(
-        # server_name="0.0.0.0",
-        # server_port=7860,
         share=args.share,               # ← can be set via python app.py --share
-        # theme=gr.themes.Default(),
-        # css=CSS,
     )
