@@ -14,10 +14,11 @@ from typing import Generator
 import yaml
 
 # ────────────────────────────────────────────────
-# Load configuration (unchanged)
+# Load configuration
 # ────────────────────────────────────────────────
 CONFIG_DIR = Path(__file__).parent / "configs"
 CONFIG_PATH = CONFIG_DIR / "configs.yml"
+
 try:
     with open(CONFIG_PATH, encoding="utf-8") as f:
         CONFIG = yaml.safe_load(f) or {}
@@ -50,7 +51,7 @@ def get_model_label(model_id: str) -> str:
     return MODEL_DISPLAY_NAMES.get(model_id, model_id)
 
 # ────────────────────────────────────────────────
-# Ollama streaming (unchanged)
+# Ollama streaming generator
 # ────────────────────────────────────────────────
 def stream_from_ollama(prompt: str, model: str, temperature: float = DEFAULT_TEMPERATURE) -> Generator[str, None, None]:
     url = f"{OLLAMA_API_BASE}/api/generate"
@@ -64,11 +65,14 @@ def stream_from_ollama(prompt: str, model: str, temperature: float = DEFAULT_TEM
         with requests.post(url, json=payload, stream=True, timeout=180) as r:
             r.raise_for_status()
             for line in r.iter_lines():
-                if not line: continue
+                if not line:
+                    continue
                 try:
                     data = json.loads(line.decode("utf-8"))
-                    if "response" in data: yield data["response"]
-                    if data.get("done"): return
+                    if "response" in data:
+                        yield data["response"]
+                    if data.get("done"):
+                        return
                 except json.JSONDecodeError:
                     continue
     except requests.RequestException as e:
@@ -77,43 +81,57 @@ def stream_from_ollama(prompt: str, model: str, temperature: float = DEFAULT_TEM
         yield f"\n\n**Unexpected error**\n{str(e)}"
 
 # ────────────────────────────────────────────────
-# Single user UI creator (unchanged)
+# Create UI components for one user (no events attached yet)
 # ────────────────────────────────────────────────
-def create_single_user_ui(idx: int, user_data: dict):
+def create_single_user_components(idx: int, user_data: dict):
     name = user_data.get("name", f"{DEFAULT_USER_PREFIX} {idx+1}")
     model = user_data.get("model", DEFAULT_MODEL)
     temp = user_data.get("temp", DEFAULT_TEMPERATURE)
 
     with gr.Column(elem_classes="user-session") as col:
         with gr.Row(equal_height=True):
-            name_box = gr.Textbox(value=name, label="Name", max_lines=1, scale=3)
+            name_box = gr.Textbox(
+                value=name, label="Name", max_lines=1, scale=3,
+                key=f"user_{idx}_name"
+            )
             model_dropdown = gr.Dropdown(
                 choices=[(get_model_label(m), m) for m in AVAILABLE_MODELS],
                 value=model, label="Model", interactive=True, scale=4,
+                key=f"user_{idx}_model"
             )
             temp_slider = gr.Slider(
                 minimum=TEMP_MIN, maximum=TEMP_MAX, step=TEMP_STEP,
                 value=temp, label="Temperature", scale=3,
+                key=f"user_{idx}_temp"
             )
-            remove_btn = gr.Button("× Remove", variant="stop", size="sm", min_width=80, scale=1)
+            remove_btn = gr.Button(
+                "× Remove", variant="stop", size="sm", min_width=80, scale=1,
+                key=f"user_{idx}_remove"
+            )
 
         prompt_input = gr.Textbox(
             label="Prompt", lines=MAX_PROMPT_LINES,
-            placeholder="Type your message… (Shift+Enter to send)", show_label=True,
+            placeholder="Type your message… (Shift+Enter to send)",
+            key=f"user_{idx}_prompt"
         )
         response_output = gr.Textbox(
             label="Response", lines=MAX_OUTPUT_LINES, interactive=False,
-            show_copy_button=True, autoscroll=True, max_lines=MAX_OUTPUT_LINES + 2,
+            show_copy_button=True, autoscroll=True,
+            key=f"user_{idx}_response"
         )
 
     return {
-        "col": col, "remove_btn": remove_btn, "name": name_box,
-        "model": model_dropdown, "temp": temp_slider,
-        "prompt": prompt_input, "response": response_output,
+        "col": col,
+        "remove_btn": remove_btn,
+        "name": name_box,
+        "model": model_dropdown,
+        "temp": temp_slider,
+        "prompt": prompt_input,
+        "response": response_output,
     }
 
 # ────────────────────────────────────────────────
-# CSS (unchanged)
+# CSS
 # ────────────────────────────────────────────────
 CSS = """
 .user-session {
@@ -127,10 +145,11 @@ CSS = """
 """
 
 # ────────────────────────────────────────────────
-# Main app
+# Main Gradio app
 # ────────────────────────────────────────────────
 with gr.Blocks(title="Multi-User Ollama Chat", css=CSS, theme=gr.themes.Soft()) as demo:
-    users_state = gr.State([], render=False)   # ← Fix: inside Blocks + render=False
+    users_state    = gr.State([], render=False)           # list of user dicts
+    component_refs = gr.State({})                         # {index: component_dict}
 
     gr.Markdown(
         "# Multi-User Ollama Streaming Chat\n\n"
@@ -145,29 +164,39 @@ with gr.Blocks(title="Multi-User Ollama Chat", css=CSS, theme=gr.themes.Soft()) 
 
     users_container = gr.Column()
 
-    with users_container:
-        @gr.render(inputs=users_state)
-        def render_users(users):
-            if not users:
+    @gr.render(inputs=[users_state, component_refs])
+    def render_users(users, refs):
+        users_container.clear()
+
+        if not users:
+            with users_container:
                 gr.Markdown("**No users yet** — click **Add New User** to begin.")
-                return
+            return {}, {}
 
+        new_refs = {}
+
+        with users_container:
             for i, user in enumerate(users):
-                comps = create_single_user_ui(i, user)
+                comps = create_single_user_components(i, user)
+                new_refs[i] = comps
 
-                def make_remove_handler(remove_idx=i):
+                # ── Remove user ───────────────────────────────────────
+                def remove_handler(remove_idx=i):
                     def remove():
-                        current = users_state.value.copy()
-                        if 0 <= remove_idx < len(current):
-                            current.pop(remove_idx)
-                        return current
+                        lst = users_state.value.copy()
+                        if 0 <= remove_idx < len(lst):
+                            lst.pop(remove_idx)
+                        return lst
                     return remove
 
                 comps["remove_btn"].click(
-                    make_remove_handler(), outputs=users_state, queue=False
+                    remove_handler(),
+                    outputs=users_state,
+                    queue=False
                 )
 
-                def make_generate_handler(gen_idx=i):
+                # ── Generate response ─────────────────────────────────
+                def generate_handler(gen_idx=i):
                     def generate(prompt, model, temp):
                         if not prompt or not prompt.strip():
                             yield "Please enter a message."
@@ -182,13 +211,14 @@ with gr.Blocks(title="Multi-User Ollama Chat", css=CSS, theme=gr.themes.Soft()) 
                     return generate
 
                 comps["prompt"].submit(
-                    make_generate_handler(),
+                    generate_handler(),
                     inputs=[comps["prompt"], comps["model"], comps["temp"]],
                     outputs=comps["response"],
                     queue=True,
                 )
 
-                def make_state_updater(up_idx=i):
+                # ── Update user settings in state ─────────────────────
+                def update_handler(up_idx=i):
                     def update(name, model, temp):
                         lst = users_state.value.copy()
                         if 0 <= up_idx < len(lst):
@@ -198,27 +228,40 @@ with gr.Blocks(title="Multi-User Ollama Chat", css=CSS, theme=gr.themes.Soft()) 
 
                 for comp in [comps["name"], comps["model"], comps["temp"]]:
                     comp.change(
-                        make_state_updater(),
+                        update_handler(),
                         inputs=[comps["name"], comps["model"], comps["temp"]],
                         outputs=users_state,
                         queue=False,
                     )
 
-    def add_new_user():
-        current = users_state.value.copy()
+        return new_refs, new_refs
+
+    # ── Add new user ──────────────────────────────────────────────
+    def add_new_user(current_users, current_refs):
+        lst = current_users[:] if current_users else []
         new_user = {
-            "name": f"{DEFAULT_USER_PREFIX} {len(current) + 1}",
+            "name": f"{DEFAULT_USER_PREFIX} {len(lst) + 1}",
             "model": DEFAULT_MODEL,
             "temp": DEFAULT_TEMPERATURE,
         }
-        current.append(new_user)
-        return current
+        lst.append(new_user)
+        return lst, current_refs  # render will rebuild components
 
-    add_btn.click(add_new_user, outputs=users_state, queue=False)
+    add_btn.click(
+        add_new_user,
+        inputs=[users_state, component_refs],
+        outputs=[users_state, component_refs],
+        queue=False
+    )
 
+    # ── Initial load ──────────────────────────────────────────────
     demo.load(
         lambda: [
-            {"name": f"{DEFAULT_USER_PREFIX} {i+1}", "model": DEFAULT_MODEL, "temp": DEFAULT_TEMPERATURE}
+            {
+                "name": f"{DEFAULT_USER_PREFIX} {i+1}",
+                "model": DEFAULT_MODEL,
+                "temp": DEFAULT_TEMPERATURE
+            }
             for i in range(INITIAL_USERS_COUNT)
         ],
         outputs=users_state,
@@ -229,6 +272,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Multi-user Ollama chat")
     parser.add_argument("--share", action="store_true", help="Create public share link")
     args = parser.parse_args()
+
     demo.queue(max_size=20).launch(
         share=args.share,
         server_name="0.0.0.0",
