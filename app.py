@@ -1,5 +1,5 @@
 """
-Multi-user Ollama streaming chat interface with Gradio 4.x+
+Multi-user Ollama streaming chat interface with Gradio
 - Dynamic add/remove users
 - Per-user model selection & temperature
 - Streaming responses
@@ -17,7 +17,7 @@ import yaml
 # Load configuration
 # ────────────────────────────────────────────────
 CONFIG_DIR = Path(__file__).parent / "configs"
-CONFIG_PATH = CONFIG_DIR / "config.yml"  # note: usually it's config.yml (singular)
+CONFIG_PATH = CONFIG_DIR / "config.yml"   # ← usually singular "config.yml"
 try:
     with open(CONFIG_PATH, encoding="utf-8") as f:
         CONFIG = yaml.safe_load(f) or {}
@@ -152,8 +152,10 @@ def create_single_user_ui(idx: int, user_data: dict):
     }
 
 # ────────────────────────────────────────────────
-# Main Gradio Interface
+# State & CSS
 # ────────────────────────────────────────────────
+users_state = gr.State([])  # list of dicts: {"name":str, "model":str, "temp":float}
+
 CSS = """
 .user-session {
     margin: 1.5rem 0;
@@ -167,92 +169,9 @@ CSS = """
 }
 """
 
-users_state = gr.State([])  # list of dicts: {"name":str, "model":str, "temp":float}
-
-@gr.render(inputs=users_state)
-def render_users(users):
-    if not users:
-        with gr.Column():
-            gr.Markdown("**No users yet** — click **Add New User** to begin.")
-        return
-
-    for i, user in enumerate(users):
-        comps = create_single_user_ui(i, user)
-
-        # ── Remove user ─────────────────────────────────────
-        def make_remove_handler(remove_idx=i):
-            def remove():
-                current = users_state.value.copy()
-                if 0 <= remove_idx < len(current):
-                    current.pop(remove_idx)
-                return current
-            return remove
-
-        comps["remove_btn"].click(
-            make_remove_handler(),
-            outputs=users_state,
-            queue=False,
-        )
-
-        # ── Generate response ───────────────────────────────
-        def make_generate_handler(gen_idx=i):
-            def generate(prompt, model, temp):
-                if not prompt or not prompt.strip():
-                    yield "Please enter a message."
-                    return
-
-                yield "▌ Thinking..."
-
-                full_response = ""
-                for chunk in stream_from_ollama(prompt, model, float(temp)):
-                    full_response += chunk
-                    yield full_response + "▌"
-                    time.sleep(STREAM_DELAY)
-
-                yield full_response
-
-            return generate
-
-        comps["prompt"].submit(
-            make_generate_handler(),
-            inputs=[comps["prompt"], comps["model"], comps["temp"]],
-            outputs=comps["response"],
-            queue=True,
-        )
-
-        # Optional: keep state in sync when user changes name/model/temp
-        def make_state_updater(up_idx=i):
-            def update(name, model, temp):
-                lst = users_state.value.copy()
-                if 0 <= up_idx < len(lst):
-                    lst[up_idx].update({"name": name, "model": model, "temp": temp})
-                return lst
-            return update
-
-        for comp, key in [
-            (comps["name"], "name"),
-            (comps["model"], "model"),
-            (comps["temp"], "temp"),
-        ]:
-            comp.change(
-                make_state_updater(),
-                inputs=[comps["name"], comps["model"], comps["temp"]],
-                outputs=users_state,
-                queue=False,
-            )
-
-# ── Add new user ────────────────────────────────────────────
-def add_new_user():
-    current = users_state.value.copy()
-    new_user = {
-        "name": f"{DEFAULT_USER_PREFIX} {len(current) + 1}",
-        "model": DEFAULT_MODEL,
-        "temp": DEFAULT_TEMPERATURE,
-    }
-    current.append(new_user)
-    return current
-
-# ── Main layout ─────────────────────────────────────────────
+# ────────────────────────────────────────────────
+# Main Interface
+# ────────────────────────────────────────────────
 with gr.Blocks(title="Multi-User Ollama Chat", css=CSS, theme=gr.themes.Soft()) as demo:
     gr.Markdown(
         "# Multi-User Ollama Streaming Chat\n\n"
@@ -269,8 +188,88 @@ with gr.Blocks(title="Multi-User Ollama Chat", css=CSS, theme=gr.themes.Soft()) 
         )
 
     users_container = gr.Column()
+
     with users_container:
-        render_users()
+        @gr.render(inputs=users_state)
+        def render_users(users):
+            if not users:
+                gr.Markdown("**No users yet** — click **Add New User** to begin.")
+                return
+
+            for i, user in enumerate(users):
+                comps = create_single_user_ui(i, user)
+
+                # Remove handler
+                def make_remove_handler(remove_idx=i):
+                    def remove():
+                        current = users_state.value.copy()
+                        if 0 <= remove_idx < len(current):
+                            current.pop(remove_idx)
+                        return current
+                    return remove
+
+                comps["remove_btn"].click(
+                    make_remove_handler(),
+                    outputs=users_state,
+                    queue=False,
+                )
+
+                # Generate handler
+                def make_generate_handler(gen_idx=i):
+                    def generate(prompt, model, temp):
+                        if not prompt or not prompt.strip():
+                            yield "Please enter a message."
+                            return
+
+                        yield "▌ Thinking..."
+
+                        full_response = ""
+                        for chunk in stream_from_ollama(prompt, model, float(temp)):
+                            full_response += chunk
+                            yield full_response + "▌"
+                            time.sleep(STREAM_DELAY)
+
+                        yield full_response
+
+                    return generate
+
+                comps["prompt"].submit(
+                    make_generate_handler(),
+                    inputs=[comps["prompt"], comps["model"], comps["temp"]],
+                    outputs=comps["response"],
+                    queue=True,
+                )
+
+                # Keep name/model/temp in sync with state
+                def make_state_updater(up_idx=i):
+                    def update(name, model, temp):
+                        lst = users_state.value.copy()
+                        if 0 <= up_idx < len(lst):
+                            lst[up_idx].update({"name": name, "model": model, "temp": temp})
+                        return lst
+                    return update
+
+                for comp, _ in [
+                    (comps["name"], None),
+                    (comps["model"], None),
+                    (comps["temp"], None),
+                ]:
+                    comp.change(
+                        make_state_updater(),
+                        inputs=[comps["name"], comps["model"], comps["temp"]],
+                        outputs=users_state,
+                        queue=False,
+                    )
+
+    def add_new_user():
+        current = users_state.value.copy()
+        new_user = {
+            "name": f"{DEFAULT_USER_PREFIX} {len(current) + 1}",
+            "model": DEFAULT_MODEL,
+            "temp": DEFAULT_TEMPERATURE,
+        }
+        current.append(new_user)
+        return current
 
     add_btn.click(
         add_new_user,
