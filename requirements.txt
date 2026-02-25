@@ -7,3 +7,4 @@ typing-extensions>=4.0.0      # better typing support (especially if using older
 pillow>=9.0.0                 # image handling (very often needed)
 numpy>=1.23.0                 # numeric arrays (frequently used together with Gradio)
 pandas>=2.0.0                 # data frames (very common in data apps)
+streamlit
