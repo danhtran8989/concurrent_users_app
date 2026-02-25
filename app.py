@@ -214,7 +214,7 @@ with gr.Blocks(title="Multi-User Ollama Chat", css=CSS, theme=gr.themes.Soft()) 
 
     @gr.render(inputs=users_state)
     def render_all_users(users_list):
-        users_container.clear()
+        users_container.clear()           # ← DELETE THIS LINE
 
         if not users_list:
             with users_container:
