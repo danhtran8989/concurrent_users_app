@@ -234,10 +234,16 @@ with gr.Blocks(title="Multi-User Ollama Chat") as demo:   # ← theme removed he
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--share", action="store_true", help="Create public share link")
+    args = parser.parse_args()
+
     demo.queue(max_size=20).launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False,           # change to True for public link
-        # theme=gr.themes.Default(),   # ← moved here (fixes deprecation warning)
+        # server_name="0.0.0.0",
+        # server_port=7860,
+        share=args.share,               # ← can be set via python app.py --share
+        # theme=gr.themes.Default(),
         # css=CSS,
     )
