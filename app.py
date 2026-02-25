@@ -238,6 +238,6 @@ if __name__ == "__main__":
         server_name="0.0.0.0",
         server_port=7860,
         share=False,           # change to True for public link
-        theme=gr.themes.Default(),   # ← moved here (fixes deprecation warning)
-        css=CSS,
+        # theme=gr.themes.Default(),   # ← moved here (fixes deprecation warning)
+        # css=CSS,
     )
