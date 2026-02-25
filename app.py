@@ -214,7 +214,7 @@ with gr.Blocks(title="Multi-User Ollama Chat", css=CSS, theme=gr.themes.Soft()) 
 
     @gr.render(inputs=users_state)
     def render_all_users(users_list):
-        users_container.clear()           # ← DELETE THIS LINE
+        # No .clear() needed — Gradio already cleared the container
 
         if not users_list:
             with users_container:
