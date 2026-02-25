@@ -16,7 +16,7 @@ from typing import Generator
 # ─── Configuration ──────────────────────────────────────────────────────────────
 
 CONFIG_DIR = Path(__file__).parent / "configs"
-CONFIG_FILE = CONFIG_DIR / "config.yml"
+CONFIG_FILE = CONFIG_DIR / "configs.yml"
 
 DEFAULT_CONFIG = {
     "ollama": {"api_base": "http://localhost:11434"},
