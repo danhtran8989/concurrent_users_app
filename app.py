@@ -28,7 +28,6 @@ except Exception as e:
     CONFIG = {}
 
 def cfg(path: str, default=None):
-    """Nested config getter with fallback"""
     keys = path.split(".")
     val = CONFIG
     for k in keys:
@@ -60,6 +59,10 @@ def get_model_label(model_id: str) -> str:
     return MODEL_DISPLAY_NAMES.get(model_id, model_id)
 
 
+# Simple counter for user numbering
+user_counter = 0
+
+
 # ────────────────────────────────────────────────
 # Ollama streaming generator
 # ────────────────────────────────────────────────
@@ -68,7 +71,6 @@ def stream_from_ollama(
     model: str,
     temperature: float = DEFAULT_TEMPERATURE,
 ) -> Generator[str, None, None]:
-    """Generator yielding response tokens from Ollama"""
     url = f"{OLLAMA_API_BASE}/api/generate"
     payload = {
         "model": model,
@@ -101,10 +103,13 @@ def stream_from_ollama(
 # Create one user session block
 # ────────────────────────────────────────────────
 def create_user_ui():
+    global user_counter
+    user_counter += 1
+
     with gr.Column(elem_classes="user-session") as session_block:
         with gr.Row(equal_height=True):
             name_box = gr.Textbox(
-                value=f"{DEFAULT_USER_PREFIX} {gr.State(len(gr.State.user_sessions or []) + 1)}",
+                value=f"{DEFAULT_USER_PREFIX} {user_counter}",
                 label="Name",
                 max_lines=1,
                 scale=3,
@@ -199,7 +204,7 @@ CSS = """
 }
 """
 
-with gr.Blocks(title="Multi-User Ollama Chat", theme=gr.themes.Default()) as demo:
+with gr.Blocks(title="Multi-User Ollama Chat") as demo:   # ← theme removed here
 
     gr.Markdown(
         "# Multi-User Ollama Streaming Chat\n\n"
@@ -232,8 +237,7 @@ if __name__ == "__main__":
     demo.queue(max_size=20).launch(
         server_name="0.0.0.0",
         server_port=7860,
-        share=False,           # ← change to True only when you want public link
-        # debug=True,          # useful during development
-        theme=gr.themes.Default(),
+        share=False,           # change to True for public link
+        theme=gr.themes.Default(),   # ← moved here (fixes deprecation warning)
         css=CSS,
     )
