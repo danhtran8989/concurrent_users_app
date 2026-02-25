@@ -1,149 +1,268 @@
+"""
+Multi-user Ollama streaming chat interface with Gradio
+- Dynamic add/remove users
+- Per-user model selection & temperature
+- Streaming responses
+"""
+
 import gradio as gr
 import requests
 import json
 import time
-from typing import Dict, List
+from pathlib import Path
+from typing import Generator, Dict, Any
+
+import yaml
 
 # ────────────────────────────────────────────────
-#  CONFIG
+# Load configuration
 # ────────────────────────────────────────────────
-OLLAMA_HOST = "localhost"
-OLLAMA_PORT = 11434
-DEFAULT_MODEL = "llama3.2"
-DEFAULT_TEMP = 0.7
+CONFIG_DIR = Path(__file__).parent / "configs"
+CONFIG_PATH = CONFIG_DIR / "configs.yml"
 
-# We'll store user sessions here
-users: Dict[str, Dict] = {}           # id → {"name": str, "output": str, "component": gr.Blocks or None}
-next_user_id = 1
+try:
+    with open(CONFIG_PATH, encoding="utf-8") as f:
+        CONFIG = yaml.safe_load(f) or {}
+except Exception as e:
+    print(f"Failed to load config {CONFIG_PATH}: {e}")
+    CONFIG = {}
+
+def cfg(path: str, default: Any = None) -> Any:
+    """Nested config getter with fallback"""
+    keys = path.split(".")
+    val = CONFIG
+    for k in keys:
+        val = val.get(k, {})
+    return val if val != {} else default
 
 
-def ollama_stream(prompt: str, model: str = DEFAULT_MODEL, temp: float = DEFAULT_TEMP):
-    """Generator that yields tokens from Ollama"""
-    url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/generate"
+# ────────────────────────────────────────────────
+# Config values with sane defaults
+# ────────────────────────────────────────────────
+OLLAMA_API_BASE     = cfg("ollama.api_base",    "http://localhost:11434")
+AVAILABLE_MODELS    = cfg("models.available",   ["llama3.2:3b"])
+DEFAULT_MODEL       = cfg("models.default",     AVAILABLE_MODELS[0] if AVAILABLE_MODELS else "llama3.2:3b")
+MODEL_DISPLAY_NAMES = cfg("models.display_names", {})
+
+DEFAULT_TEMPERATURE = cfg("generation.default_temperature", 0.75)
+TEMP_MIN            = cfg("generation.temperature.min",     0.0)
+TEMP_MAX            = cfg("generation.temperature.max",     2.0)
+TEMP_STEP           = cfg("generation.temperature.step",    0.05)
+
+DEFAULT_USER_PREFIX = cfg("ui.default_user_name_prefix",    "User")
+INITIAL_USERS_COUNT = cfg("ui.initial_users_count",         1)
+STREAM_DELAY        = cfg("ui.streaming_animation_delay",   0.012)
+MAX_PROMPT_LINES    = cfg("ui.max_prompt_lines",            4)
+MAX_OUTPUT_LINES    = cfg("ui.max_output_lines",            12)
+
+
+def get_model_label(model_id: str) -> str:
+    return MODEL_DISPLAY_NAMES.get(model_id, model_id)
+
+
+# ────────────────────────────────────────────────
+# Global state
+# ────────────────────────────────────────────────
+users: Dict[str, Dict[str, Any]] = {}
+user_counter = 1
+
+
+def stream_from_ollama(
+    prompt: str,
+    model: str,
+    temperature: float = DEFAULT_TEMPERATURE,
+) -> Generator[str, None, None]:
+    """Generator yielding response tokens from Ollama"""
+    url = f"{OLLAMA_API_BASE}/api/generate"
     payload = {
         "model": model,
-        "prompt": prompt,
+        "prompt": prompt.strip(),
         "stream": True,
-        "options": {"temperature": temp}
+        "options": {"temperature": max(0.0, min(2.0, temperature))},
     }
 
     try:
-        with requests.post(url, json=payload, stream=True, timeout=90) as r:
+        with requests.post(url, json=payload, stream=True, timeout=100) as r:
             r.raise_for_status()
             for line in r.iter_lines():
-                if line:
-                    try:
-                        data = json.loads(line)
-                        if "response" in data:
-                            yield data["response"]
-                        if data.get("done", False):
-                            yield None   # signal end
-                            break
-                    except json.JSONDecodeError:
-                        continue
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line.decode("utf-8"))
+                    if "response" in data:
+                        yield data["response"]
+                    if data.get("done"):
+                        return
+                except json.JSONDecodeError:
+                    continue
+    except requests.RequestException as e:
+        yield f"\n\n**Ollama connection error**\n{str(e)}"
     except Exception as e:
-        yield f"\n\nError: {str(e)}"
+        yield f"\n\n**Unexpected error**\n{str(e)}"
 
 
-def add_new_user():
-    global next_user_id
+def create_user_ui() -> gr.Column:
+    global user_counter
+    uid = f"u{user_counter}"
+    user_counter += 1
 
-    user_id = f"user_{next_user_id}"
-    next_user_id += 1
+    default_name = f"{DEFAULT_USER_PREFIX} {user_counter}"
 
-    default_name = f"User {next_user_id-1}"
-
-    with gr.Column() as user_block:
+    with gr.Column(elem_classes="user-session") as session_block:
         with gr.Row(equal_height=True):
-            name = gr.Textbox(value=default_name, label="Name", scale=2, max_lines=1)
-            remove_btn = gr.Button("× Remove", variant="stop", scale=0, size="sm")
+            name_box = gr.Textbox(
+                value=default_name,
+                label="Name",
+                max_lines=1,
+                scale=3,
+            )
+            model_dropdown = gr.Dropdown(
+                choices=[(get_model_label(m), m) for m in AVAILABLE_MODELS],
+                value=DEFAULT_MODEL,
+                label="Model",
+                interactive=True,
+                scale=4,
+            )
+            temp_slider = gr.Slider(
+                minimum=TEMP_MIN,
+                maximum=TEMP_MAX,
+                step=TEMP_STEP,
+                value=DEFAULT_TEMPERATURE,
+                label="Temperature",
+                scale=3,
+            )
+            remove_button = gr.Button(
+                "× Remove",
+                variant="stop",
+                size="sm",
+                scale=1,
+                min_width=80,
+            )
 
-        prompt = gr.Textbox(label="Prompt", lines=3, placeholder="Type your message here…")
-        output = gr.Textbox(label="Output", lines=8, interactive=False)
-
-        # Store reference
-        users[user_id] = {
-            "name": name,
-            "prompt": prompt,
-            "output": output,
-            "block": user_block,
-            "remove_btn": remove_btn
-        }
-
-        # Bind remove
-        remove_btn.click(
-            fn=remove_user,
-            inputs=[gr.State(user_id)],
-            outputs=[],
-            api_name=False
+        prompt_input = gr.Textbox(
+            label="Prompt",
+            lines=MAX_PROMPT_LINES,
+            placeholder="Type your message… (Shift+Enter to send)",
+            show_label=True,
         )
 
-        # Bind generate on prompt submit (Shift+Enter or button)
-        prompt.submit(
-            fn=generate_for_user,
-            inputs=[gr.State(user_id), prompt],
-            outputs=output,
-            api_name=False
+        response_output = gr.Textbox(
+            label="Response",
+            lines=MAX_OUTPUT_LINES,
+            interactive=False,
+            show_copy_button=True,
+            autoscroll=True,
         )
 
-    return user_block
+    # Store component references
+    users[uid] = {
+        "block": session_block,
+        "name": name_box,
+        "model": model_dropdown,
+        "temp": temp_slider,
+        "prompt": prompt_input,
+        "output": response_output,
+        "remove": remove_button,
+    }
+
+    # Bind events
+    remove_button.click(
+        fn=lambda u=uid: remove_session(u),
+        inputs=None,
+        outputs=None,
+        queue=False,
+    )
+
+    prompt_input.submit(
+        fn=generate,
+        inputs=[uid, prompt_input, model_dropdown, temp_slider],
+        outputs=response_output,
+        queue=True,
+    )
+
+    return session_block
 
 
-def remove_user(user_id: str):
-    if user_id in users:
-        users[user_id]["block"].clear()
-        del users[user_id]
+def remove_session(uid: str):
+    if uid in users:
+        users[uid]["block"].clear()
+        del users[uid]
 
 
-def generate_for_user(user_id: str, prompt: str):
-    if not prompt.strip():
-        return "Please enter a prompt."
+def generate(
+    uid: str,
+    prompt: str,
+    model: str,
+    temperature: float,
+) -> Generator[str, None, None]:
+    if not prompt or not prompt.strip():
+        yield "Please type a message."
+        return
 
-    if user_id not in users:
-        return "User session no longer exists."
+    if uid not in users:
+        yield "[This session has been removed]"
+        return
 
-    output_comp = users[user_id]["output"]
     yield "▌ Thinking..."
 
     full_response = ""
-    for token in ollama_stream(prompt):
-        if token is None:
-            break
-        full_response += token
+    for chunk in stream_from_ollama(prompt, model, temperature):
+        full_response += chunk
         yield full_response + "▌"
-        time.sleep(0.01)  # smoother feeling
+        time.sleep(STREAM_DELAY)
 
     yield full_response
 
 
 # ────────────────────────────────────────────────
-#  MAIN INTERFACE
+# Gradio Interface
 # ────────────────────────────────────────────────
 
-css = """
-.user-row { margin-bottom: 24px; border-bottom: 1px solid #444; padding-bottom: 16px; }
-.gradio-container { max-width: 980px !important; }
+CSS = """
+.user-session {
+    margin: 1.4rem 0;
+    padding: 1.3rem;
+    border: 1px solid #555;
+    border-radius: 10px;
+    background: #111;
+}
+.add-button {
+    margin: 1rem 0 1.5rem;
+}
 """
 
-with gr.Blocks(title="Multi-User Ollama Chat", css=css) as demo:
+with gr.Blocks(title="Multi-User Ollama Chat", css=CSS, theme=gr.themes.Default()) as demo:
 
-    gr.Markdown("### Multi-user Ollama streamer")
-
-    add_btn = gr.Button("ADD NEW USER", variant="primary", elem_classes="add-new-user")
-
-    user_container = gr.Column()
-
-    # Initial users (optional)
-    with user_container:
-        add_new_user()      # start with 1 user
-        add_new_user()      # or start with 2, 3...
-
-    # When ADD button is clicked → append new user block
-    add_btn.click(
-        fn=add_new_user,
-        inputs=[],
-        outputs=user_container,
-        queue=False
+    gr.Markdown(
+        "# Multi-User Ollama Streaming Chat\n\n"
+        f"**Available models:** {', '.join(get_model_label(m) for m in AVAILABLE_MODELS)}"
     )
 
-demo.queue().launch()
+    add_new = gr.Button(
+        "➕ Add New User",
+        variant="primary",
+        elem_classes="add-button",
+        size="lg",
+    )
+
+    users_container = gr.Column()
+
+    # Initialize with configured number of users
+    with users_container:
+        for _ in range(INITIAL_USERS_COUNT):
+            create_user_ui()
+
+    add_new.click(
+        fn=create_user_ui,
+        inputs=None,
+        outputs=users_container,
+        queue=False,
+    )
+
+
+if __name__ == "__main__":
+    demo.queue(max_size=20).launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        # debug=True,           # uncomment during development
+    )
