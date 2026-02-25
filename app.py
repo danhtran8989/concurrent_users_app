@@ -17,7 +17,7 @@ import yaml
 # Load configuration (unchanged)
 # ────────────────────────────────────────────────
 CONFIG_DIR = Path(__file__).parent / "configs"
-CONFIG_PATH = CONFIG_DIR / "config.yml"
+CONFIG_PATH = CONFIG_DIR / "configs.yml"
 try:
     with open(CONFIG_PATH, encoding="utf-8") as f:
         CONFIG = yaml.safe_load(f) or {}
