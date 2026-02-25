@@ -10,7 +10,7 @@ import requests
 import json
 import time
 from pathlib import Path
-from typing import Generator, Dict, Any
+from typing import Generator
 
 import yaml
 
@@ -27,7 +27,7 @@ except Exception as e:
     print(f"Failed to load config {CONFIG_PATH}: {e}")
     CONFIG = {}
 
-def cfg(path: str, default: Any = None) -> Any:
+def cfg(path: str, default=None):
     """Nested config getter with fallback"""
     keys = path.split(".")
     val = CONFIG
@@ -61,12 +61,8 @@ def get_model_label(model_id: str) -> str:
 
 
 # ────────────────────────────────────────────────
-# Global state
+# Ollama streaming generator
 # ────────────────────────────────────────────────
-users: Dict[str, Dict[str, Any]] = {}
-user_counter = 1
-
-
 def stream_from_ollama(
     prompt: str,
     model: str,
@@ -82,7 +78,7 @@ def stream_from_ollama(
     }
 
     try:
-        with requests.post(url, json=payload, stream=True, timeout=100) as r:
+        with requests.post(url, json=payload, stream=True, timeout=120) as r:
             r.raise_for_status()
             for line in r.iter_lines():
                 if not line:
@@ -101,17 +97,14 @@ def stream_from_ollama(
         yield f"\n\n**Unexpected error**\n{str(e)}"
 
 
-def create_user_ui() -> gr.Column:
-    global user_counter
-    uid = f"u{user_counter}"
-    user_counter += 1
-
-    default_name = f"{DEFAULT_USER_PREFIX} {user_counter}"
-
+# ────────────────────────────────────────────────
+# Create one user session block
+# ────────────────────────────────────────────────
+def create_user_ui():
     with gr.Column(elem_classes="user-session") as session_block:
         with gr.Row(equal_height=True):
             name_box = gr.Textbox(
-                value=default_name,
+                value=f"{DEFAULT_USER_PREFIX} {gr.State(len(gr.State.user_sessions or []) + 1)}",
                 label="Name",
                 max_lines=1,
                 scale=3,
@@ -135,8 +128,8 @@ def create_user_ui() -> gr.Column:
                 "× Remove",
                 variant="stop",
                 size="sm",
-                scale=1,
                 min_width=80,
+                scale=1,
             )
 
         prompt_input = gr.Textbox(
@@ -154,28 +147,35 @@ def create_user_ui() -> gr.Column:
             autoscroll=True,
         )
 
-    # Store component references
-    users[uid] = {
-        "block": session_block,
-        "name": name_box,
-        "model": model_dropdown,
-        "temp": temp_slider,
-        "prompt": prompt_input,
-        "output": response_output,
-        "remove": remove_button,
-    }
+    # ─── Events ───
+    def remove_session():
+        session_block.clear()
 
-    # Bind events
     remove_button.click(
-        fn=lambda u=uid: remove_session(u),
+        fn=remove_session,
         inputs=None,
         outputs=None,
         queue=False,
     )
 
+    def generate_response(prompt, model, temperature):
+        if not prompt or not prompt.strip():
+            yield "Please type a message."
+            return
+
+        yield "▌ Thinking..."
+
+        full_response = ""
+        for chunk in stream_from_ollama(prompt, model, temperature):
+            full_response += chunk
+            yield full_response + "▌"
+            time.sleep(STREAM_DELAY)
+
+        yield full_response
+
     prompt_input.submit(
-        fn=generate,
-        inputs=[uid, prompt_input, model_dropdown, temp_slider],
+        fn=generate_response,
+        inputs=[prompt_input, model_dropdown, temp_slider],
         outputs=response_output,
         queue=True,
     )
@@ -183,41 +183,9 @@ def create_user_ui() -> gr.Column:
     return session_block
 
 
-def remove_session(uid: str):
-    if uid in users:
-        users[uid]["block"].clear()
-        del users[uid]
-
-
-def generate(
-    uid: str,
-    prompt: str,
-    model: str,
-    temperature: float,
-) -> Generator[str, None, None]:
-    if not prompt or not prompt.strip():
-        yield "Please type a message."
-        return
-
-    if uid not in users:
-        yield "[This session has been removed]"
-        return
-
-    yield "▌ Thinking..."
-
-    full_response = ""
-    for chunk in stream_from_ollama(prompt, model, temperature):
-        full_response += chunk
-        yield full_response + "▌"
-        time.sleep(STREAM_DELAY)
-
-    yield full_response
-
-
 # ────────────────────────────────────────────────
 # Gradio Interface
 # ────────────────────────────────────────────────
-
 CSS = """
 .user-session {
     margin: 1.4rem 0;
@@ -231,7 +199,7 @@ CSS = """
 }
 """
 
-with gr.Blocks(title="Multi-User Ollama Chat", css=CSS, theme=gr.themes.Default()) as demo:
+with gr.Blocks(title="Multi-User Ollama Chat", theme=gr.themes.Default()) as demo:
 
     gr.Markdown(
         "# Multi-User Ollama Streaming Chat\n\n"
@@ -264,6 +232,8 @@ if __name__ == "__main__":
     demo.queue(max_size=20).launch(
         server_name="0.0.0.0",
         server_port=7860,
-        # debug=True,           # uncomment during development
-        share=True,           # set to False if you don't want a public link
+        share=False,           # ← change to True only when you want public link
+        # debug=True,          # useful during development
+        theme=gr.themes.Default(),
+        css=CSS,
     )
