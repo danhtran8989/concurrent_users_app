@@ -265,4 +265,5 @@ if __name__ == "__main__":
         server_name="0.0.0.0",
         server_port=7860,
         # debug=True,           # uncomment during development
+        share=True,           # set to False if you don't want a public link
     )
