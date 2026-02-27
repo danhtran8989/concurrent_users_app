@@ -18,14 +18,15 @@ class Result:
     tokens_per_sec: float
     total_tokens: int
     duration_sec: float
+    grap_sec: float
     error: Optional[str] = None
 
 def run_one_user(name: str, prompt: str, model: str = "qwen2:0.5b") -> Result:
     try:
         start_time = time.time()
         total_tokens = 0
-
-        stream = ollama.chat(
+        client = ollama.Client(host="http://localhost:11434")
+        stream = client.chat(
             model=model,
             messages=[{'role': 'user', 'content': prompt}],
             stream=True,
@@ -36,6 +37,7 @@ def run_one_user(name: str, prompt: str, model: str = "qwen2:0.5b") -> Result:
         )
 
         for chunk in stream:
+            start_grap = time
             if 'message' in chunk and 'content' in chunk['message']:
                 content = chunk['message']['content']
                 # Rough token estimation (not perfect but good enough for speed comparison)
@@ -48,13 +50,14 @@ def run_one_user(name: str, prompt: str, model: str = "qwen2:0.5b") -> Result:
 
         end_time = time.time()
         duration = end_time - start_time
+        grap_sec = grap_sec - start_time
 
         if total_tokens <= 0:
             return Result(name, 0.0, 0, duration, "No tokens counted")
 
         tps = total_tokens / duration
 
-        return Result(name, tps, total_tokens, duration)
+        return Result(name, tps, total_tokens, duration, grap_sec)
 
     except Exception as e:
         return Result(name, 0.0, 0, 0, str(e))
@@ -135,7 +138,8 @@ def main():
             print(f"{r.name:8} → ERROR: {r.error}")
         else:
             print(f"{r.name:8} → {r.tokens_per_sec:6.1f} t/s   "
-                  f"({r.total_tokens:3d} tokens in {r.duration_sec:5.2f}s)")
+                  f"({r.total_tokens:3d} tokens in {r.duration_sec:5.2f}s) - "
+                  f"grap_sec: {r.grap_sec:.2f}s")
 
     print("-"*70)
     print(f"Wall-clock time for all 3 requests: {total_duration:.2f} seconds")
