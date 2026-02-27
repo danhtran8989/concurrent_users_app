@@ -37,7 +37,7 @@ def run_one_user(name: str, prompt: str, model: str = "qwen2:0.5b") -> Result:
         )
 
         for chunk in stream:
-            start_grap = time
+            start_grap = time.tine()
             if 'message' in chunk and 'content' in chunk['message']:
                 content = chunk['message']['content']
                 # Rough token estimation (not perfect but good enough for speed comparison)
@@ -50,17 +50,17 @@ def run_one_user(name: str, prompt: str, model: str = "qwen2:0.5b") -> Result:
 
         end_time = time.time()
         duration = end_time - start_time
-        grap_sec = grap_sec - start_time
+        grap_sec = start_grap - start_time
 
         if total_tokens <= 0:
-            return Result(name, 0.0, 0, duration, "No tokens counted")
+            return Result(name, 0.0, 0, duration, grap_sec, "No tokens counted")
 
         tps = total_tokens / duration
 
         return Result(name, tps, total_tokens, duration, grap_sec)
 
     except Exception as e:
-        return Result(name, 0.0, 0, 0, str(e))
+        return Result(name, 0.0, 0, 0, 0, str(e))
 
 
 def worker(name: str, prompt: str, results: list, model: str):
